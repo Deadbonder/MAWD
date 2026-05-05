@@ -800,10 +800,24 @@ scheduler.start()
 ```
 <App>
 ├── <DashboardLayout>
-│   ├── <Header />         # App title, connection status, time
-│   ├── <KPIRibbon />      # Horizontal scrolling KPI cards
-│   ├── <ChartView />      # Time-series chart with controls
-│   └── <TimeRangeSelector />  # 1h / 6h / 24h / 7d buttons
+│   ├── <Header />
+│   ├── <ViewToggle />            # Switch: "Charts" | "3D Twin"
+│   ├── <KPIRibbon />             # (existing, always visible)
+│   │
+│   ├── <ChartView />             # Shown when mode === "charts"
+│   │
+│   └── <DigitalTwinView />        # Shown when mode === "twin"
+│       ├── <R3F Canvas>
+│       │   ├── <ambientLight />
+│       │   ├── <directionalLight />
+│       │   ├── <OrbitControls />
+│       │   ├── <FloorPlan />         # Static floor/room mesh
+│       │   ├── <SensorNode3D />      # One per active sensor
+│       │   │   ├── <AnimatedMesh />   # Geometry reacts to value
+│       │   │   ├── <StatusRing />     # Glow ring: green/yellow/red
+│       │   │   └── <Html>             # drei overlay for label
+│       │   └── <EffectComposer>      # Post-processing bloom
+│       └── <SensorDetailPanel />     # Slide-out panel on click
 ```
 
 ### 5.2 Component Details
@@ -907,27 +921,336 @@ frontend/
 │   ├── components/
 │   │   ├── DashboardLayout.tsx
 │   │   ├── Header.tsx
+│   │   ├── ViewToggle.tsx              # NEW — switches Charts ↔ 3D Twin
 │   │   ├── KPIRibbon.tsx
 │   │   ├── KPICard.tsx
 │   │   ├── ChartView.tsx
 │   │   ├── TimeRangeSelector.tsx
-│   │   └── ConnectionStatus.tsx
+│   │   ├── ConnectionStatus.tsx
+│   │   └── twin/                      # NEW — 3D Digital Twin
+│   │       ├── DigitalTwinView.tsx     # Canvas + scene container
+│   │       ├── SensorNode3D.tsx        # Generic sensor node (R3F)
+│   │       ├── FanNode3D.tsx           # Fan-specific animated node
+│   │       ├── GaugeNode3D.tsx         # Pressure gauge node
+│   │       ├── FloorPlan.tsx           # Static floor/room geometry
+│   │       ├── SensorDetailPanel.tsx   # Slide-out info panel
+│   │       └── effects/
+│   │           └── GlowEffect.tsx     # Reusable bloom/glow wrapper
 │   ├── hooks/
 │   │   ├── useSensorData.ts
 │   │   ├── useKPIs.ts
 │   │   └── useWebSocket.ts
 │   ├── context/
-│   │   └── SensorContext.tsx
+│   │   └── SensorContext.tsx           # MODIFIED — enhanced reducer with anomaly status
 │   ├── api/
-│   │   └── client.ts           # axios or fetch wrapper
+│   │   └── client.ts
 │   ├── types/
-│   │   └── sensor.ts           # TypeScript interfaces
+│   │   └── sensor.ts
 │   ├── App.tsx
 │   └── main.tsx
 ├── tailwind.config.js
 ├── vite.config.ts
 └── package.json
 ```
+
+---
+
+## 5.6 3D Digital Twin — Implementation Details
+
+### 5.6.1 Package Dependencies
+
+```json
+{
+  "@react-three/fiber": "^8.15.0",
+  "@react-three/drei": "^9.90.0",
+  "@react-three/postprocessing": "^2.16.0",
+  "three": "^0.160.0"
+}
+```
+
+### 5.6.2 Core Component: SensorNode3D
+
+```tsx
+// components/twin/SensorNode3D.tsx
+import { useRef, useMemo } from 'react'
+import { useFrame } from '@react-three/fiber'
+import { Html } from '@react-three/drei'
+import * as THREE from 'three'
+import { useSensorContext } from '../../context/SensorContext'
+
+interface SensorNode3DProps {
+  sensorId: string
+  readingType: string
+  position: [number, number, number]  // x, y, z in scene
+  minValue: number   // expected min (e.g., 15°C)
+  maxValue: number   // expected max (e.g., 45°C)
+  onClick: (sensorId: string) => void
+}
+
+function valueToColor(value: number, min: number, max: number): THREE.Color {
+  const t = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1)
+  const color = new THREE.Color()
+  // 0.0 → hue 0.6 (blue/cold), 0.5 → hue 0.3 (green), 1.0 → hue 0.0 (red/hot)
+  color.setHSL(0.6 - t * 0.6, 0.9, 0.5)
+  return color
+}
+
+export function SensorNode3D({
+  sensorId, readingType, position, minValue, maxValue, onClick
+}: SensorNode3DProps) {
+  const meshRef = useRef<THREE.Mesh>(null!)
+  const glowRef = useRef<THREE.PointLight>(null!)
+  const { sensorData } = useSensorContext()
+
+  const reading = sensorData[sensorId]?.[readingType]
+  const value = reading?.value ?? (minValue + maxValue) / 2
+
+  useFrame((_, delta) => {
+    if (!meshRef.current) return
+    const targetColor = valueToColor(value, minValue, maxValue)
+    const mat = meshRef.current.material as THREE.MeshStandardMaterial
+
+    // Lerp color for smooth transitions (buttery-smooth, no snapping)
+    mat.color.lerp(targetColor, delta * 3)
+    mat.emissive.lerp(targetColor, delta * 3)
+    mat.emissiveIntensity = THREE.MathUtils.lerp(
+      mat.emissiveIntensity, 0.3 + ((value - minValue) / (maxValue - minValue)) * 0.7, delta * 3
+    )
+
+    // Pulse glow light intensity
+    if (glowRef.current) {
+      glowRef.current.intensity = 0.5 + Math.sin(Date.now() * 0.003) * 0.2
+      glowRef.current.color.copy(targetColor)
+    }
+  })
+
+  return (
+    <group position={position}>
+      <mesh ref={meshRef} onClick={() => onClick(sensorId)} castShadow>
+        <sphereGeometry args={[0.3, 32, 32]} />
+        <meshStandardMaterial
+          color="#4488ff"
+          emissive="#4488ff"
+          emissiveIntensity={0.3}
+          roughness={0.2}
+          metalness={0.8}
+        />
+      </mesh>
+      <pointLight ref={glowRef} intensity={0.5} distance={3} />
+      <Html distanceFactor={10} position={[0, 0.5, 0]} center>
+        <div className="sensor-label">
+          <span className="sensor-id">{sensorId}</span>
+          <span className="sensor-value">
+            {value.toFixed(1)} {reading?.unit ?? ''}
+          </span>
+        </div>
+      </Html>
+    </group>
+  )
+}
+```
+
+### 5.6.3 Scene Container: DigitalTwinView
+
+```tsx
+// components/twin/DigitalTwinView.tsx
+import { Canvas } from '@react-three/fiber'
+import { OrbitControls, Environment, Grid } from '@react-three/drei'
+import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import { SensorNode3D } from './SensorNode3D'
+import { SensorDetailPanel } from './SensorDetailPanel'
+import { useState } from 'react'
+
+const SENSOR_LAYOUT = [
+  { sensorId: 'sensor_01', readingType: 'temperature', position: [-2, 0.5, 1], min: 15, max: 45 },
+  { sensorId: 'sensor_02', readingType: 'humidity',    position: [0, 0.5, -1],  min: 20, max: 90 },
+  { sensorId: 'sensor_03', readingType: 'pressure',    position: [2, 0.5, 1],   min: 900, max: 1100 },
+] as const
+
+export function DigitalTwinView() {
+  const [selectedSensor, setSelectedSensor] = useState<string | null>(null)
+
+  return (
+    <div className="twin-container" style={{ width: '100%', height: '70vh' }}>
+      <Canvas shadows camera={{ position: [5, 5, 5], fov: 50 }}>
+        <ambientLight intensity={0.3} />
+        <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
+        <Environment preset="city" />
+
+        <Grid
+          args={[20, 20]}
+          cellSize={1}
+          cellColor="#6f6f6f"
+          sectionColor="#9f9f9f"
+          fadeDistance={25}
+          position={[0, 0, 0]}
+        />
+
+        {SENSOR_LAYOUT.map((s) => (
+          <SensorNode3D
+            key={s.sensorId}
+            sensorId={s.sensorId}
+            readingType={s.readingType}
+            position={s.position as [number, number, number]}
+            minValue={s.min}
+            maxValue={s.max}
+            onClick={setSelectedSensor}
+          />
+        ))}
+
+        <OrbitControls enableDamping dampingFactor={0.05} minDistance={3} maxDistance={20} />
+
+        {/* Bloom post-processing makes glowing sensor nodes pop */}
+        <EffectComposer>
+          <Bloom luminanceThreshold={0.6} luminanceSmoothing={0.9} intensity={0.8} />
+        </EffectComposer>
+      </Canvas>
+
+      {selectedSensor && (
+        <SensorDetailPanel
+          sensorId={selectedSensor}
+          onClose={() => setSelectedSensor(null)}
+        />
+      )}
+    </div>
+  )
+}
+```
+
+### 5.6.4 Specialized Animated Nodes (Fan Example)
+
+```tsx
+// components/twin/FanNode3D.tsx
+import { useRef } from 'react'
+import { useFrame } from '@react-three/fiber'
+import * as THREE from 'three'
+import { useSensorContext } from '../../context/SensorContext'
+
+interface FanNode3DProps {
+  sensorId: string
+  position: [number, number, number]
+  maxRPM: number
+}
+
+export function FanNode3D({ sensorId, position, maxRPM }: FanNode3DProps) {
+  const fanRef = useRef<THREE.Group>(null!)
+  const { sensorData } = useSensorContext()
+
+  const rpm = sensorData[sensorId]?.['rpm']?.value ?? 0
+
+  useFrame((_, delta) => {
+    if (!fanRef.current) return
+    const radsPerSec = (rpm / maxRPM) * Math.PI * 4
+    fanRef.current.rotation.y += radsPerSec * delta
+  })
+
+  return (
+    <group position={position}>
+      <mesh>
+        <cylinderGeometry args={[0.1, 0.1, 0.2, 16]} />
+        <meshStandardMaterial color="#666" metalness={0.9} />
+      </mesh>
+      <group ref={fanRef}>
+        {[0, 1, 2, 3].map((i) => (
+          <mesh key={i} rotation={[0, (Math.PI / 2) * i, Math.PI / 6]}>
+            <boxGeometry args={[0.6, 0.02, 0.15]} />
+            <meshStandardMaterial color="#aaa" metalness={0.7} />
+          </mesh>
+        ))}
+      </group>
+    </group>
+  )
+}
+```
+
+### 5.6.5 Enhanced SensorContext for 3D + Anomaly
+
+```tsx
+// context/SensorContext.tsx
+type ReadingData = {
+  value: number
+  unit: string
+  timestamp: string
+  status: 'normal' | 'warning' | 'critical'
+  anomaly?: {
+    score: number
+    is_anomaly: boolean
+    confidence: number
+    contributing_features: string[]
+  }
+}
+
+type SensorState = {
+  [sensorId: string]: {
+    [readingType: string]: ReadingData
+  }
+}
+
+type Action =
+  | { type: 'WS_FLUSH'; readings: Array<{
+      sensor_id: string; reading_type: string; value: number;
+      unit: string; timestamp: string; anomaly?: any
+    }> }
+  | { type: 'SELECT_SENSOR'; sensorId: string | null }
+
+function classifyStatus(value: number, sensorId: string, readingType: string): 'normal' | 'warning' | 'critical' {
+  // Placeholder — thresholds per sensor/reading_type would be loaded from config
+  return 'normal'
+}
+
+function sensorReducer(state: SensorState, action: Action): SensorState {
+  switch (action.type) {
+    case 'WS_FLUSH': {
+      const next = { ...state }
+      for (const r of action.readings) {
+        if (!next[r.sensor_id]) next[r.sensor_id] = {}
+        next[r.sensor_id][r.reading_type] = {
+          value: r.value,
+          unit: r.unit,
+          timestamp: r.timestamp,
+          status: classifyStatus(r.value, r.sensor_id, r.reading_type),
+          anomaly: r.anomaly,
+        }
+      }
+      return next
+    }
+    default:
+      return state
+  }
+}
+```
+
+### 5.6.6 WebSocket → 3D Scene Data Flow
+
+```mermaid
+sequenceDiagram
+    participant WS as FastAPI WS /ws/live
+    participant Hook as useWebSocket
+    participant Ctx as SensorContext
+    participant Node as SensorNode3D
+    participant Frame as R3F useFrame (60fps)
+    participant GPU as WebGL Renderer
+
+    WS->>Hook: {"event":"flush_complete","readings":[...]}
+    Hook->>Ctx: dispatch({ type: 'WS_FLUSH', readings })
+    Ctx->>Node: Re-render with new props (value, status, anomaly)
+    Note over Node: React re-render sets target color/speed/animation
+    loop Every animation frame (~16ms)
+        Frame->>Node: useFrame callback
+        Node->>Node: Lerp color, rotation, glow toward target (delta-smoothed)
+        Node->>GPU: Updated mesh properties
+    end
+```
+
+### 5.6.7 Performance Guardrails
+
+| Concern | Mitigation |
+|---------|-----------|
+| Too many draw calls (100+ sensors) | Use `<Instances>` from drei for batched instanced rendering |
+| Memory on mobile/low-end | `<AdaptiveDpr>` + `<AdaptiveEvents>` from drei auto-downgrades |
+| Large 3D models | Use `glTF` + Draco compression; lazy-load via `useGLTF.preload()` |
+| React re-renders | Sensor nodes use `React.memo`; only re-render when their specific sensor data changes |
+| Post-processing cost | Bloom only applied via `selective` mode on emissive meshes |
 
 ---
 
@@ -938,8 +1261,300 @@ frontend/
 | MQTT broker unreachable at startup | Retry with exponential backoff (max 5 retries), then exit with error + health check reflects `mqtt_connected: false` |
 | JSON parse failure on MQTT message | Log warning, skip message, do not crash |
 | Invalid sensor_id in message | Validate against expected pattern, reject if malformed |
-| InfluxDB write failure | Retain buffer, retry on next flush cycle; emit `flush_error` via WebSocket |
+| InfluxDB write failure | Circuit Breaker transitions OPEN; data spills to disk; retry probe after 60s |
+| Circuit OPEN extended outage | Disk spillover accumulates; FIFO drain on recovery |
 | WebSocket client disconnects | Server cleans up connection; client auto-reconnects with backoff |
 | API request for unknown sensor | Return `404` with descriptive message |
 | Empty buffer on flush trigger | Skip write (no-op), log "nothing to flush" |
 | Sensor stops publishing | Buffer holds last known value; after 2 missed flush cycles (10 min), health check alerts via `stale: true` flag |
+| ML model crashes or is missing | `AnomalyScorer.score()` returns `is_anomaly: false` — ingestion always continues |
+| Redis unavailable | `redis_client.set()` raises — caught and logged; ingestion continues; `/latest` falls back to InfluxDB |
+
+---
+
+## 7. Anomaly Detection Engine — Implementation Details
+
+### 7.1 Feature Extraction
+
+Each sensor reading is transformed into a feature vector using a **sliding window** of the last 20 readings for that sensor+reading_type combination.
+
+```python
+# anomaly/feature_extractor.py
+import numpy as np
+from collections import deque
+
+class SensorFeatureExtractor:
+    """Maintains per-sensor sliding windows and extracts statistical features."""
+
+    def __init__(self, window_size: int = 20):
+        self.window_size = window_size
+        self.windows: dict[tuple[str, str], deque[float]] = {}
+
+    def extract(self, sensor_id: str, reading_type: str, value: float) -> np.ndarray:
+        key = (sensor_id, reading_type)
+        if key not in self.windows:
+            self.windows[key] = deque(maxlen=self.window_size)
+
+        window = self.windows[key]
+        window.append(value)
+        values = np.array(window)
+
+        if len(values) < 3:
+            return np.zeros(6)
+
+        return np.array([
+            value,
+            np.mean(values),
+            np.std(values),
+            value - values[-2] if len(values) > 1 else 0,
+            value - np.min(values),
+            np.max(values) - value,
+        ])
+```
+
+### 7.2 Anomaly Scorer
+
+```python
+# anomaly/scorer.py
+import joblib
+import numpy as np
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+class AnomalyScorer:
+    def __init__(self, model_path: str = "/models/iforest.joblib", threshold: float = -0.5):
+        self.threshold = threshold
+        self.model = None
+        self.model_version = "none"
+        self._load_model(model_path)
+
+    def _load_model(self, path: str):
+        p = Path(path)
+        if p.exists():
+            self.model = joblib.load(p)
+            self.model_version = p.stem
+            logger.info(f"Loaded anomaly model: {self.model_version}")
+        else:
+            logger.warning(f"No model at {path} — anomaly detection disabled")
+
+    def score(self, features: np.ndarray) -> dict:
+        if self.model is None:
+            return {"score": 0.0, "is_anomaly": False, "confidence": 0.0,
+                    "contributing_features": [], "model_version": "disabled"}
+        try:
+            raw_score = float(self.model.decision_function(features.reshape(1, -1))[0])
+            is_anomaly = raw_score < self.threshold
+            confidence = min(abs(raw_score) / abs(self.threshold), 1.0)
+
+            contributing = []
+            if len(features) >= 4 and abs(features[3]) > 0.5:
+                contributing.append("rate_of_change")
+
+            return {
+                "score": round(raw_score, 4),
+                "is_anomaly": is_anomaly,
+                "confidence": round(confidence, 4),
+                "contributing_features": contributing,
+                "model_version": self.model_version,
+            }
+        except Exception as e:
+            logger.error(f"Anomaly scoring failed: {e}")
+            return {"score": 0.0, "is_anomaly": False, "confidence": 0.0,
+                    "contributing_features": [], "model_version": "error"}
+```
+
+### 7.3 Model Training Script (Offline)
+
+```python
+# scripts/train_anomaly_model.py
+"""
+Offline training script. Run against historical InfluxDB data to generate
+the Isolation Forest model file.
+
+Usage: python scripts/train_anomaly_model.py --hours 48 --output /models/iforest.joblib
+"""
+from sklearn.ensemble import IsolationForest
+import joblib
+import numpy as np
+
+def train_model(historical_features: np.ndarray, contamination: float = 0.05):
+    model = IsolationForest(
+        n_estimators=100,
+        contamination=contamination,
+        max_samples='auto',
+        random_state=42,
+        n_jobs=-1
+    )
+    model.fit(historical_features)
+    return model
+
+if __name__ == "__main__":
+    features = fetch_historical_features(hours=48)  # → np.ndarray (N, 6)
+    model = train_model(features)
+    joblib.dump(model, "/models/iforest.joblib")
+    print(f"Model saved. Training samples: {len(features)}")
+```
+
+### 7.4 Redis Pub/Sub for Real-Time Anomaly Alerts
+
+```python
+# In FastAPI WebSocket handler — subscribe to anomaly channel
+async def ws_live(websocket: WebSocket):
+    await websocket.accept()
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe("alerts:anomaly")
+
+    async for message in pubsub.listen():
+        if message["type"] == "message":
+            await websocket.send_text(message["data"])
+```
+
+---
+
+## 8. Circuit Breaker — Detailed Design
+
+### 8.1 State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+
+    Closed --> Open : failure_count >= FAILURE_THRESHOLD (5)
+    Closed --> Closed : write succeeds → reset failure_count
+
+    Open --> HalfOpen : RECOVERY_TIMEOUT elapsed (60s)
+    Open --> Open : all calls rejected (fail-fast, no DB contact)
+
+    HalfOpen --> Closed : probe write succeeds → reset counters
+    HalfOpen --> Open : probe write fails → restart recovery timer
+
+    note right of Closed : Normal operation. All writes go to InfluxDB.
+    note right of Open : DB assumed down. Writes buffered locally to disk. No DB contact attempted.
+    note right of HalfOpen : Send ONE probe write. Success → CLOSED. Failure → OPEN for another 60s.
+```
+
+### 8.2 Disk Spillover & Recovery
+
+```python
+DISK_BUFFER_DIR = Path(os.getenv("DISK_BUFFER_DIR", "/data/buffer"))
+DISK_BUFFER_DIR.mkdir(parents=True, exist_ok=True)
+
+def _spill_to_disk(readings: list[dict]):
+    """Write readings to a timestamped JSON file as durable overflow."""
+    filename = DISK_BUFFER_DIR / f"batch_{int(time.time())}.json"
+    with open(filename, "w") as f:
+        json.dump(readings, f)
+    log_info(f"Spilled {len(readings)} readings to {filename}")
+
+def _drain_disk_buffer():
+    """Replay disk-buffered batches in FIFO order after circuit closes."""
+    files = sorted(DISK_BUFFER_DIR.glob("batch_*.json"))
+    for f in files:
+        try:
+            with open(f) as fh:
+                readings = json.load(fh)
+            write_to_influxdb(readings)
+            f.unlink()
+            log_info(f"Drained disk batch {f.name}")
+        except Exception as e:
+            log_error(f"Disk drain failed on {f.name}: {e}")
+            break
+```
+
+---
+
+## 9. OpenTelemetry — Setup & Collector Configuration
+
+### 9.1 Python Dependencies
+
+```
+opentelemetry-api==1.23.0
+opentelemetry-sdk==1.23.0
+opentelemetry-exporter-otlp-proto-grpc==1.23.0
+opentelemetry-instrumentation-fastapi==0.44b0
+opentelemetry-instrumentation-redis==0.44b0
+```
+
+### 9.2 OTel Collector Config (`config/otel-collector.yaml`)
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  jaeger:
+    endpoint: jaeger:14250
+    tls:
+      insecure: true
+  logging:
+    loglevel: info
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger, logging]
+```
+
+### 9.3 Trace Anatomy: MQTT → Redis → InfluxDB → WebSocket
+
+```
+Trace: mqtt_pipeline (trace_id: abc123)
+│
+├── Span: mqtt_message_received          [0ms ─── 1ms]
+│   ├── attribute: sensor_id = "sensor_01"
+│   └── attribute: reading_type = "temperature"
+│
+├── Span: anomaly_scoring                [1ms ─── 2.5ms]
+│   ├── attribute: model_version = "iforest_v1"
+│   └── attribute: anomaly_score = -0.82
+│
+├── Span: redis_speed_layer_write        [2.5ms ─── 3ms]
+│   └── attribute: redis_key = "latest:sensor_01:temperature"
+│
+├── Span: buffer_insert                  [3ms ─── 3.1ms]
+│   └── attribute: buffer.total_sensors = 10
+│
+└── [... 300 seconds later, linked span ...]
+    │
+    ├── Span: influx_batch_flush         [0ms ─── 45ms]
+    │   ├── attribute: circuit_breaker.state = "closed"
+    │   └── attribute: batch.size = 10
+    │
+    └── Span: ws_broadcast               [45ms ─── 48ms]
+        └── attribute: ws.connected_clients = 3
+```
+
+### 9.4 FastAPI OTel Instrumented Endpoint Example
+
+```python
+# services/api/main.py
+from fastapi import FastAPI
+from otel.setup import init_telemetry
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+app = FastAPI(title="IoT Telemetry API")
+tracer = init_telemetry("iot-api-service")
+FastAPIInstrumentor.instrument_app(app)  # Traces every HTTP request automatically
+
+@app.get("/api/v1/sensors/{sensor_id}/data")
+async def get_sensor_data(sensor_id: str, start: str = "-24h", end: str = "now"):
+    with tracer.start_as_current_span("influx_query",
+            attributes={"sensor.id": sensor_id, "query.start": start}) as span:
+        data = query_influxdb(sensor_id, start, end)
+        span.set_attribute("query.result_count", len(data))
+        return {"sensor_id": sensor_id, "data": data}
+```
