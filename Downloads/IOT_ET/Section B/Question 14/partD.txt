@@ -1,0 +1,21 @@
+Why UDP is preferred over TCP for real-time video streaming:
+
+  UDP has NO connection setup (no 3-way handshake), NO acknowledgements, and NO retransmission.
+  This means:
+    - Lower latency: Frames are sent immediately without waiting for ACKs
+    - No head-of-line blocking: If one packet is lost, UDP does NOT pause the entire stream
+      waiting for a retransmit (TCP would stall everything to maintain ordering)
+    - In live video, a frame from 2 seconds ago is useless — it is better to skip it
+      and show the latest frame than to pause and wait for the old one
+
+  In summary: For real-time video, speed and low latency matter more than guaranteed delivery.
+  A few dropped frames are acceptable; frozen/lagging video is not.
+
+Visual artefact when a UDP frame is dropped:
+
+  When a UDP packet carrying a JPEG frame is lost, the receiver simply never gets that frame.
+  The visible result is:
+    - A brief "freeze" or "stutter" — the display shows the previous frame for slightly longer
+    - If part of a frame is lost (partial drop), you may see a corrupted/glitched image with
+      grey or green blocks, torn lines, or a partially rendered frame
+    - The stream then resumes normally with the next successfully received frame

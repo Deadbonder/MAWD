@@ -1,0 +1,38 @@
+1 which flag in tpc header is used to initiate the 3-way handshake connection
+ack, syn, fin, rst
+
+2 udp is spreffered over tcp in IoT apps when
+data integrityand ordering are critical
+low latency matters more than guaranteed delivery
+secure file tranfer is req 
+conn state must be maintained across sessions
+
+3. in pythons threading ewhich mech is used to prevent race conditions on shared data
+semaphore only
+join()
+Lock/Mutex 
+daemon=True flag
+
+4. MQTT , which QoS level guarantees exactly-once message delivery ?
+Qos 0
+Qos1
+Qos3
+QoS4
+
+which opencv funvtion correctly converts a Bgr img to grayscale ?
+cv2.cvtColor()
+cv2.grayscale()
+cv2.toGray()
+cv2.imread(img,0)
+
+in apache kafka what does partition offset represent?
+
+which linux cmd is used to monitor realtime cpu and memory usage interactively
+ps aux, df-h , top/htop, netstat
+
+what does the Redis command Expire key 60 do?
+
+
+in multithreaded server , a thread created with daemon= True will-
+
+in kafka what is primary role of consumer group ?

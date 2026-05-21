@@ -1,0 +1,12 @@
+Canny Edge Detection Thresholds:
+  Threshold1 (low)  = 50
+  Threshold2 (high) = 150
+
+Justification:
+  - The 1:3 ratio (50:150) is a widely recommended default ratio for Canny.
+  - Threshold1 = 50 is low enough to detect faint/weak edges (e.g., facial features, background textures)
+    but high enough to ignore minor noise in the image.
+  - Threshold2 = 150 is high enough to keep only strong, well-defined edges (e.g., object outlines,
+    sharp boundaries) while filtering out noise and irrelevant details.
+  - Any edge gradient between 50-150 is kept only if it is connected to a strong edge (above 150),
+    providing a good balance between detail and clarity.

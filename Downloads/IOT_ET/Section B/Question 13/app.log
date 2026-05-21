@@ -1,0 +1,6 @@
+INFO: Application started
+INFO: User login attempted
+ERROR: Database connection timeout
+INFO: Retrying connection
+ERROR: Authentication failure for user 'admin'
+INFO: Connection restored
