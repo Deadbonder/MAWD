@@ -1,0 +1,17 @@
+version: '3'
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    # Optional: persist data
+    # volumes:
+    #   - redis_data:/data
+
+  mosquitto:
+    image: eclipse-mosquitto:1.6
+    ports:
+      - "1883:1883"
+
+# volumes:
+#   redis_data:
